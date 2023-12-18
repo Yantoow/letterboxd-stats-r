@@ -1,0 +1,522 @@
+---
+title: "Letterboxd Stats"
+author: "by Yanto Christoffel"
+output: html_document
+---
+
+<style type="text/css">
+
+h1.title {
+    font-size: 38px;
+    font-family: "Liberation Serif";
+    color: Black;
+    text-align: center;
+}
+h4.author {
+    font-size: 18px;
+    font-family: "Liberation Serif";
+    font-style: italic;
+    color: Black;
+    text-align: center;
+}
+
+</style>
+
+<center>
+
+```{r, TODO, echo=F, message=F, warning=F}
+# TODO: - Tags Over Time plot (with menu to select tags)
+#       - Ratings Over Time plot (with menu to select ratings)
+#       - Release Years bar plot
+
+# TODO: - Create sections and make a table of contents for them (using toc:true)
+#       - Use the watchlist.csv
+#       - Make the Last Entry labels for the other timelines in the Over Time plots
+```
+
+```{r, System-Settings, echo=F, message=F, warning=F, results='hide'}
+# Set the time display to English
+Sys.setlocale("LC_TIME", 'en_GB.UTF-8')
+```
+
+```{r Loading-Packages, echo=F, message=FALSE, warning=FALSE}
+# Check if any required packages are uninstalled
+list.of.packages <- c("ggplot2", "plotly", "gridExtra", "ggforce", "rvest")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+
+# If so, install them
+if(length(new.packages)) install.packages(new.packages)
+
+# Load the required packages
+for (pkg in list.of.packages) {
+    library(pkg, character.only=T)
+}
+```
+
+```{r, Making-Functions, echo=F, message=F, warning=F}
+# Plots a ggplot object and makes it interactive
+my_plot_func <-
+    function(plot) {
+        ggplotly(plot, tooltip="text") %>%
+            config(displayModeBar=F) %>%
+            layout(hoverlabel=list(align="left",
+                                   bgcolor="black"),
+                   showlegend=F,
+                   plot_bgcolor=plot_background_color)
+    }
+
+# Creates a plot that does not display data
+make_null_plot <-
+    function(title, xlab, ylab, xbreaks=seq(0, 10)) {
+        null_plot <- ggplot() +
+                theme_minimal() +
+                theme(plot.title=element_text(hjust=.5)) +
+                labs(title=title,
+                     x=xlab,
+                     y=ylab) +
+                scale_x_discrete(breaks=factor(xbreaks),
+                                 limits=as.character(xbreaks)) +
+                scale_y_discrete(breaks=factor(seq(0, 10, 2.5)),
+                                 limits=as.character(seq(0, 10, 2.5)))
+
+            return(my_plot_func(null_plot))
+    }
+
+# Resets the row numbers of a data frame
+reset_rows <-
+    function(df) {
+        row.names(df) <- NULL
+        df$id <- as.numeric(row.names(df))
+        return(df)
+    }
+
+# Retrieves the Letterboxd username from a URI link
+get_username <-
+    function(link) {
+        html_page <- as.character(read_html(link))
+
+        index_start <- gregexpr(pattern="letterboxd.com/", html_page)[[1]][1] + 15
+        index_end <- gregexpr(pattern="/film", html_page)[[1]][1] - 1
+        username <- substr(html_page, index_start, index_end)
+
+        return(username)
+    }
+```
+
+```{r, Transforming-Database, echo=F, message=F, warning=F}
+# Load the csv file
+diary = read.csv('csv_files/diary.csv', stringsAsFactors=FALSE)
+
+# Edit the columns
+diary[diary$Rewatch != 'Yes', 'Rewatch'] <- 'No'
+diary[is.na(diary$Rating), 'Rating'] <- -1
+diary$Watched.Date <- as.Date(diary$Watched.Date)
+diary$Date <- as.Date(diary$Date)
+colnames(diary)[which(names(diary) == "Name")] <- "Title"
+diary$Title <- factor(diary$Title, levels=rev(unique(diary$Title)))
+
+diary$LogDiff <- diary$Date - diary$Watched.Date
+diary$Day <- weekdays(diary$Watched.Date)
+
+# Separate TV shows and shorts from movies using the tags and reset row numbers
+tvshows <- reset_rows(diary[grepl("tvshow", diary$Tags),])
+shorts <- reset_rows(diary[grepl("short", diary$Tags),])
+diary <- reset_rows(diary[!grepl("tvshow|short", diary$Tags),])
+```
+
+```{r, Setting-Variables, echo=F, message=F, warning=F}
+plot_background_color <- "aliceblue"
+username <- get_username(diary[1, "Letterboxd.URI"])
+```
+
+```{r, Creating-Timelines, echo=F, message=F, warning=F}
+# Get today's date
+today <- Sys.Date()
+
+# Create variables for the time sections
+one_year_ago <- today - 365
+thirty_days_ago <- today - 30
+seven_days_ago <- today - 7
+
+# Create data frames for the time sections
+one_year_ago_df <- reset_rows(diary[diary$Watched.Date > one_year_ago,])
+thirty_days_ago_df <- reset_rows(diary[diary$Watched.Date > thirty_days_ago,])
+seven_days_ago_df <- reset_rows(diary[diary$Watched.Date > seven_days_ago,])
+```
+
+<!-- Circle Stats -->
+# {.tabset}
+
+<hr style="border:1px solid gray"> </hr>
+
+```{r, Circle-Stats-Setup, echo=F, message=F, warning=F}
+# A data frame that contains information for the three circles
+circles <- data.frame(
+    x=c(1, 2.8, 4.6),
+    y=1,
+    r=1,
+    colors=c("#ff6600", "#29db00", "#00b0ff"),
+    inner="white",
+    titles=c("Movies Logged", "Average Rating", "Rewatches")
+)
+
+# original_colors <- c("#ff8000", "#00e054", "#40bcf4")
+
+# Makes three circles that display different statistics
+make_circle_stats <-
+    function(df, circles) {
+        # Obtain the required statistics
+        movies_logged <- nrow(df)
+        average_rating <- sprintf("%.1f", mean(df[df$Rating!=-1, "Rating"]))
+        rewatches <- nrow(df[df$Rewatch=='Yes',])
+
+        # Check if the average rating is NaN
+        if (average_rating=="NaN") {
+            average_rating <- "-"
+        }
+        
+        # Create the column for the labels
+        circles$labels <- c(movies_logged, average_rating, rewatches)
+
+        # Plot the circles with their labels
+        ggplot() +
+            geom_circle(data=circles, mapping=aes(x0=x, y0=y, r=r, fill=colors, color=colors, alpha=.1)) +
+            geom_circle(data=circles, mapping=aes(x0=x, y0=y, r=r/2, fill=inner, color=inner)) +
+            geom_text(data=circles, mapping=aes(x=x, y=y), label=circles$labels, size=8) +
+            geom_text(data=circles, mapping=aes(x=x, y=y+1.25), label=circles$titles, size=5) +
+            scale_fill_identity() +
+            scale_color_identity() +
+            coord_fixed() +
+            theme_void() +
+            theme(legend.position="None")
+    }
+```
+
+## All-Time
+```{r, Circle-Stats-All, echo=F, message=F, warning=F}
+make_circle_stats(diary, circles)
+```
+
+## Past 365 Days
+```{r, Circle-Stats-Past-365, echo=F, message=F, warning=F}
+make_circle_stats(one_year_ago_df, circles)
+```
+
+## Past 30 Days
+```{r, Circle-Stats-Past-30, echo=F, message=F, warning=F}
+make_circle_stats(thirty_days_ago_df, circles)
+```
+
+## Past 7 Days
+```{r, Circle Stats-Past-7, echo=F, message=F, warning=F}
+make_circle_stats(seven_days_ago_df, circles)
+```
+
+<!-- Rating Distributions -->
+# {.tabset} 
+
+<hr style="border:1px solid gray"> </hr>
+
+```{r, Ratings-Distribution-Setup, echo=F, message=F, warning=F}
+# Specify the colors of the different ratings
+ratings_plot_colors <- c("0.5"  = "red",
+                         "1"    = "tomato",
+                         "1.5"  = "orange",
+                         "2"    = "gold",
+                         "2.5"  = "yellow",
+                         "3"    = "greenyellow",
+                         "3.5"  = "green",
+                         "4"    = "seagreen1",
+                         "4.5"  = "aquamarine",
+                         "5"    = "cyan")
+
+# Creates a ratings distribution
+make_ratings_distribution <-
+    function(df, title) {
+        data <- df[df$Rating != -1,]
+        
+        # Return an empty plot if the data has no rows
+        if (nrow(data)==0) {
+            return(make_null_plot(title,
+                                  "Rating",
+                                  "Amount",
+                                  seq(0.5, 5, 0.5)))
+        }
+        
+        ratings_plot <- ggplot() +
+            geom_col(data=data,
+                     mapping=aes(x=as.factor(Rating),
+                                 y=1,
+                                 fill=as.factor(Rating),
+                                 Title=Title,
+                                 text=paste0(Title, " (", Year, ")", "\n",
+                                            Rating, "\U2605")),
+                     color="darkslategray") +
+            theme_minimal() +
+            theme(plot.title=element_text(hjust=.5)) +
+            labs(title=title,
+                 x="Rating",
+                 y="Amount") +
+            scale_x_discrete(breaks=factor(seq(0.5, 5, 0.5)),
+                             limits=as.character(seq(0.5, 5, 0.5))) +
+            expand_limits(y=10) +
+            scale_fill_manual(values=ratings_plot_colors) +
+            scale_y_continuous(labels=function(x) x)
+        
+        return(my_plot_func(ratings_plot))
+    }
+```
+
+## All-Time
+```{r, Ratings-Distribution-All, echo=F, message=F, warning=F}
+make_ratings_distribution(diary, "Ratings Distribution (All-Time)")
+```
+
+## Past 365 Days
+```{r, Ratings-Distribution-Past-365, echo=F, message=F, warning=F}
+make_ratings_distribution(one_year_ago_df, "Ratings Distribution (Past 365 Days)")
+```
+
+## Past 30 Days
+```{r, Ratings-Distribution-Past-30, echo=F, message=F, warning=F}
+make_ratings_distribution(thirty_days_ago_df, "Ratings Distribution (Past 30 Days)")
+```
+
+## Past 7 Days
+```{r, Ratings-Distribution-Past-7, echo=F, message=F, warning=F}
+make_ratings_distribution(seven_days_ago_df, "Ratings Distribution (Past 7 Days)")
+```
+
+<!-- Over Time Plots -->
+# {.tabset}
+
+<hr style="border:1px solid gray"> </hr>
+
+```{r, Over-Time-Setup, echo=F, message=F, warning=F}
+# Plots movies over time
+make_over_time_plot <-
+    function(df, title, last_entry_text=NULL, line=NULL) {
+        # Return an empty plot if the data has no rows
+        if (nrow(df)==0) {
+            return(make_null_plot(title,
+                                  "Time",
+                                  "Cumulative Amount"))
+        }
+        
+        all_over_time_plot <- ggplot() +
+            geom_point(data=df,
+                        mapping=aes(x=Watched.Date,
+                                    y=id,
+                                    text=paste0(Title, " (", Year, ")", "\n",
+                                               Watched.Date)),
+                        color="hotpink") +
+            last_entry_text +
+            line +
+            theme_minimal() +
+            theme(plot.title=element_text(hjust=.5)) +
+            labs(title=title,
+                 x="Time",
+                 y="Cumulative Amount")
+        
+        return(my_plot_func(all_over_time_plot))
+    }
+
+# Create variables for the 'Last Entry' text and line
+last <- tail(diary, 1)
+txt_pos_x <-last$Watched.Date - 365
+txt_pos_y <- last$id
+x_offset <- 80
+
+txt_clr <- "black"
+line_clr <- "blue"
+
+# Create the text
+text1 <- geom_text(label=last$id,
+                   aes(x=txt_pos_x, y=txt_pos_y),
+                   color=txt_clr)
+
+# Create the line
+line1 <- geom_segment(aes(x=txt_pos_x + x_offset,
+                          y=txt_pos_y,
+                          xend=txt_pos_x + 365,
+                          yend=txt_pos_y),
+                      alpha=.4,
+                      color=line_clr)
+```
+
+## All-Time
+```{r, Over-Time-All, echo=F, message=F, warning=F}
+make_over_time_plot(diary, "Movies over Time (All-Time)", text1, line1)
+```
+
+## Past 365 Days
+```{r, Over-Time-Past-365, echo=F, message=F, warning=F}
+make_over_time_plot(one_year_ago_df, "Movies over Time (Past 365 Days)")
+```
+
+## Past 30 Days
+```{r, Over-Time-Past-30), echo=F, message=F, warning=F}
+make_over_time_plot(thirty_days_ago_df, "Movies over Time (Past 30 Days)")
+```
+
+## Past 7 Days
+```{r, Over-Time-Past-7), echo=F, message=F, warning=F}
+make_over_time_plot(seven_days_ago_df, "Movies over Time (Past 7 Days)")
+```
+
+<!-- Weekday Distributions -->
+# {.tabset}
+
+<hr style="border:1px solid gray"> </hr>
+
+```{r, Weekday-Distribution-Setup, echo=F, message=F, warning=F}
+weekdays_order <- c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+# Creates a bar plot that shows the distribution of movies over the weekdays
+make_weekday_distribution <-
+    function(df, title) {
+        # Return an empty plot if the data has no rows
+        if (nrow(df)==0) {
+            return(make_null_plot(title,
+                                  "Day",
+                                  "Count",
+                                  weekdays_order))
+        }
+        
+        weekday_plot <- ggplot() +
+            geom_col(data=df,
+                     mapping=aes(x=as.factor(Day),
+                                 y=1),
+                     color="purple",
+                     fill="purple") +
+            theme_minimal() +
+            theme(plot.title=element_text(hjust=.5)) +
+            labs(x="Day", y="Count", title=title) +
+            scale_x_discrete(limits=weekdays_order)
+        
+        my_plot_func(weekday_plot)
+    }
+```
+
+## All-Time
+```{r, Weekday-Distribution-All, echo=F, message=F, warning=F}
+make_weekday_distribution(diary, "Weekday Distribution (All-Time)")
+```
+
+## Past 365 Days
+```{r, Weekday-Distribution-Past-365, echo=F, message=F, warning=F}
+make_weekday_distribution(one_year_ago_df, "Weekday Distribution (Past 365 Days)")
+```
+
+## Past 30 Days
+```{r, Weekday-Distribution-Past-30, echo=F, message=F, warning=F}
+make_weekday_distribution(thirty_days_ago_df, "Weekday Distribution (Past 30 Days)")
+```
+
+## Past 7 Days
+```{r, Weekday-Distribution-Past-7, echo=F, message=F, warning=F}
+make_weekday_distribution(seven_days_ago_df, "Weekday Distribution (Past 7 Days)")
+```
+
+#
+
+<hr style="border:1px solid gray"> </hr>
+
+```{r, The-Five, echo=F, message=F, warning=F}
+# Finds the indices of a pattern in a source
+find_indices <-
+    function(pattern, source) {
+        indices <- gregexpr(pattern=pattern, source)[[1]][1:10]
+        return(indices)
+    }
+
+# Fills a list with sub-strings of a text
+fill_list <-
+    function(my_list, matches, text, start_offset, end_offset) {
+        for (i in seq(1, 10, 2)) {
+            start <- matches[i] + start_offset
+            end <- matches[i+1] + end_offset
+            element <- substr(text, start, end)
+
+            my_list <- append(my_list, element)
+        }
+
+        return(my_list)
+    }
+
+# Finds the first five poster links in the html text
+find_posters <-
+    function(poster_list, text) {
+        start_indices <- gregexpr(pattern="img src", text)[[1]][1:5] + 9
+        end_indices <- gregexpr(pattern="jpg", text)[[1]][1:5] + 2
+        
+        spl <- strsplit(x=paste(start_indices, end_indices), split=' ')
+        
+        for (i in 1:5) {
+            start <- spl[[i]][1]
+            end <- spl[[i]][2]
+            link <- substr(text, start, end)
+            poster_list <- append(poster_list, link)
+        }
+        
+        return(poster_list)
+    }
+
+# Returns columns constructed with help of the other functions
+create_column <-
+    function(pattern, text, start_offset, end_offset) {
+        matches <- find_indices(pattern, text)
+        column <- vector("list", 0)
+        column <- fill_list(column, matches, text, start_offset, end_offset)
+        
+        return(column)
+    }
+
+rss <- paste0("https://letterboxd.com/", username, "/rss")
+page_text <- as.character(read_html(rss))
+
+the_five <- data.frame(matrix(NA, nrow=5, ncol=5))
+colnames(the_five) <- c("Title", "Year", "Rating", "Date", "Poster")
+
+the_five$Title <- create_column("filmtitle", page_text, 10, -3)
+the_five$Year <- create_column("filmyear", page_text, 9, -3)
+the_five$Rating <- create_column("memberrating", page_text, 13, -3)
+the_five$Date <- create_column("watcheddate", page_text, 12, -3)
+the_five$Poster <- find_posters(vector("list", 0), page_text)
+
+one <- the_five[1,]
+two <- the_five[2,]
+three <- the_five[3,]
+four <- the_five[4,]
+five <- the_five[5,]
+
+img_w <- 177
+img_h <- img_w * 1.5
+```
+
+<h3> Most Recent 5 Watches </h2>
+
+</center>
+
+<p align="left">
+    <img src="`r one$Poster`" alt="`r one$Title`" width=`r img_w` height=`r img_h` style="padding: 8px">
+    <img src="`r two$Poster`" alt="`r two$Title`" width=`r img_w` height=`r img_h` style="padding: 8px">
+    <img src="`r three$Poster`" alt="`r three$Title`" width=`r img_w` height=`r img_h` style="padding: 8px">
+    <img src="`r four$Poster`" alt="`r four$Title`" width=`r img_w` height=`r img_h` style="padding: 8px">
+    <img src="`r five$Poster`" alt="`r five$Title`" width=`r img_w` height=`r img_h` style="padding: 8px">
+</p>
+
+<hr style="border:1px solid gray"> </hr>
+
+```{r, echo=F, message=F, warning=F}
+
+
+```
+
+
+
+
+
+
+
+
